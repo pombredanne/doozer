@@ -415,12 +415,15 @@ func (c *conn) noop(t *T) *R {
 		return c.redirect()
 	}
 
+	println("in noop")
 	return c.cancellable(t, func(cancel chan bool) *R {
+		println("in cancellable noop")
 		select {
 		case <-cancel:
 			return nil
 		case <-bgDel(c.s.Mg, "/", store.Missing):
 		}
+		println("did del noop")
 		return &R{}
 	})
 }

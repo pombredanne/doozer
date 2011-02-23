@@ -39,7 +39,9 @@ func TestDoozerNoop(t *testing.T) {
 	go Main("a", "", u, l, nil)
 
 	cl := client.New("foo", l.Addr().String())
+	println("calling Noop")
 	err := cl.Noop()
+	println("back from Noop")
 	assert.Equal(t, nil, err)
 }
 

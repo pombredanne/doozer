@@ -16,6 +16,8 @@ import (
 	"os"
 )
 
+import "fmt"
+
 const (
 	alpha           = 50
 	pulseInterval   = 1e9
@@ -61,6 +63,7 @@ func Main(clusterName, attachAddr string, udpConn net.PacketConn, listener, webL
 	self := util.RandId()
 	st := store.New()
 	if attachAddr == "" { // we are the only node in a new cluster
+		set(st, "/doozer/info/"+self+"/addr", listenAddr, store.Missing)
 		set(st, "/doozer/info/"+self+"/public-addr", listenAddr, store.Missing)
 		set(st, "/doozer/info/"+self+"/hostname", os.Getenv("HOSTNAME"), store.Missing)
 		set(st, "/doozer/info/"+self+"/version", Version, store.Missing)
@@ -75,7 +78,13 @@ func Main(clusterName, attachAddr string, udpConn net.PacketConn, listener, webL
 	} else {
 		cl = client.New("local", attachAddr) // TODO use real cluster name
 
-		path := "/doozer/info/" + self + "/public-addr"
+		path := "/doozer/info/" + self + "/addr"
+		_, err = cl.Set(path, store.Clobber, []byte(listenAddr))
+		if err != nil {
+			panic(err)
+		}
+
+		path = "/doozer/info/" + self + "/public-addr"
 		_, err = cl.Set(path, store.Clobber, []byte(listenAddr))
 		if err != nil {
 			panic(err)
@@ -124,11 +133,12 @@ func Main(clusterName, attachAddr string, udpConn net.PacketConn, listener, webL
 	acker := ack.Ackify(udpConn)
 
 	pr := &proposer{
-		seqns: make(chan int64),
+		seqns: make(chan int64, alpha),
 		props: make(chan *consensus.Prop),
 		st:    st,
 	}
 
+	<-st.Wait(<-st.Seqns)
 	cmw := st.Watch(store.Any)
 	in := make(chan consensus.Packet)
 	out := make(chan consensus.Packet)
@@ -170,13 +180,14 @@ func Main(clusterName, attachAddr string, udpConn net.PacketConn, listener, webL
 
 	go func() {
 		for p := range out {
-			println("out packet", string(p.Data), p.Addr)
+			fmt.Printf("out packet %x %s\n", p.Data, p.Addr)
 			acker.WriteTo(p.Data, p.Addr)
 		}
 	}()
 
 	for {
 		data, addr, err := acker.ReadFrom()
+		fmt.Printf("in packet %x %s\n", data, addr)
 		if err == os.EINVAL {
 			break
 		}
