@@ -405,8 +405,8 @@ func (st *Store) Flush() {
 
 // A convenience wrapper for NewWatch that returns only the channel. Useful for
 // code that never needs to stop the Watch.
-func (st *Store) Watch(glob *Glob) <-chan Event {
-	return NewWatch(st, glob).C
+func (st *Store) Watch(glob *Glob, from int64) <-chan Event {
+	return NewWatch(st, glob, from).C
 }
 
 // Arranges for w to receive notifications when mutations are applied to st.
@@ -415,10 +415,8 @@ func (st *Store) Watch(glob *Glob) <-chan Event {
 //
 // Notifications will not be sent for changes made as the result of applying a
 // snapshot.
-func NewWatch(st *Store, glob *Glob) (w *Watch) {
-	ch := make(chan Event)
-	ver, _ := st.Snap()
-	return st.watchOn(glob, ch, ver+1, math.MaxInt64)
+func NewWatch(st *Store, glob *Glob, from int64) (w *Watch) {
+	return st.watchOn(glob, make(chan Event), from, math.MaxInt64)
 }
 
 func (st *Store) watchOn(glob *Glob, ch chan Event, from, to int64) *Watch {
@@ -455,7 +453,7 @@ func (st *Store) SyncPath(path string) (Getter, os.Error) {
 		return nil, err
 	}
 
-	wt := NewWatch(st, glob)
+	wt := NewWatch(st, glob, <-st.Seqns)
 	defer wt.Stop()
 
 	_, g := st.Snap()
