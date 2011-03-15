@@ -58,6 +58,7 @@ type Store struct {
 	cleanCh chan int64
 	notices []notice
 	flush   chan bool
+	head    int64
 }
 
 // Represents an operation to apply to the store at position Seqn.
@@ -277,8 +278,6 @@ func (st *Store) closeWatches() {
 func (st *Store) process(ops <-chan Op, seqns chan<- int64, watches chan<- int) {
 	defer st.closeWatches()
 
-	var head int64
-
 	for {
 		var flush bool
 		ver, values := st.state.ver, st.state.root
@@ -306,7 +305,7 @@ func (st *Store) process(ops <-chan Op, seqns chan<- int64, watches chan<- int) 
 			}
 		case w := <-st.watchCh:
 			n, ws := w.from, []*Watch{w}
-			for ; len(ws) > 0 && n < head; n++ {
+			for ; len(ws) > 0 && n < st.head; n++ {
 				ws = st.notify(Event{Seqn: n, Err: ErrTooLate}, ws)
 			}
 			for ; len(ws) > 0 && n <= ver; n++ {
@@ -315,8 +314,8 @@ func (st *Store) process(ops <-chan Op, seqns chan<- int64, watches chan<- int) 
 
 			st.watches = append(st.watches, ws...)
 		case seqn := <-st.cleanCh:
-			for ; head <= seqn; head++ {
-				st.log[head] = Event{}, false
+			for ; st.head <= seqn; st.head++ {
+				st.log[st.head] = Event{}, false
 			}
 		case seqns <- ver:
 			// nothing to do here
@@ -357,7 +356,7 @@ func (st *Store) process(ops <-chan Op, seqns chan<- int64, watches chan<- int) 
 		if flush {
 			st.log[ev.Seqn] = ev
 			st.watches = st.notify(ev, st.watches)
-			head = ver + 1
+			st.head = ver + 1
 		}
 	}
 }
@@ -405,8 +404,12 @@ func (st *Store) Flush() {
 
 // A convenience wrapper for NewWatch that returns only the channel. Useful for
 // code that never needs to stop the Watch.
-func (st *Store) Watch(glob *Glob, from int64) <-chan Event {
-	return NewWatch(st, glob, from).C
+func (st *Store) Watch(glob *Glob, from int64) (<-chan Event, os.Error) {
+	wt, err := NewWatch(st, glob, from)
+	if err != nil {
+		return nil, err
+	}
+	return wt.C, nil
 }
 
 // Arranges for w to receive notifications when mutations are applied to st.
@@ -415,11 +418,11 @@ func (st *Store) Watch(glob *Glob, from int64) <-chan Event {
 //
 // Notifications will not be sent for changes made as the result of applying a
 // snapshot.
-func NewWatch(st *Store, glob *Glob, from int64) (w *Watch) {
+func NewWatch(st *Store, glob *Glob, from int64) (*Watch, os.Error) {
 	return st.watchOn(glob, make(chan Event), from, math.MaxInt64)
 }
 
-func (st *Store) watchOn(glob *Glob, ch chan Event, from, to int64) *Watch {
+func (st *Store) watchOn(glob *Glob, ch chan Event, from, to int64) (*Watch, os.Error) {
 	wt := &Watch{
 		C:        ch,
 		c:        ch,
@@ -429,7 +432,18 @@ func (st *Store) watchOn(glob *Glob, ch chan Event, from, to int64) *Watch {
 		shutdown: make(chan bool, 1),
 	}
 	st.watchCh <- wt
-	return wt
+
+	// Must check this after sending wt to avoid a race.
+	// It is possible, though unlikely, that st.head is
+	// modified to become greater than from in the time
+	// between receiving wt and this check. In that case,
+	// we'll return an error unnecessarily.
+	if st.head > from {
+		wt.Stop()
+		return nil, ErrTooLate
+	}
+
+	return wt, nil
 }
 
 // Returns a read-only chan that will receive a single event representing the
@@ -438,9 +452,25 @@ func (st *Store) watchOn(glob *Glob, ch chan Event, from, to int64) *Watch {
 // If `seqn` was applied before the call to `Wait`, a dummy event will be
 // sent with its `Err` set to `ErrTooLate`.
 func (st *Store) Wait(seqn int64) (<-chan Event, os.Error) {
+	if seqn < 1 {
+		return nil, ErrTooLate
+	}
+
 	ch := make(chan Event, 1)
-	st.watchOn(Any, ch, seqn, seqn+1)
-	return ch, nil
+	wt, err := st.watchOn(Any, ch, seqn, seqn+1)
+	if err != nil {
+		return nil, err
+	}
+
+	return wt.C, nil
+}
+
+
+func (st *Store) Sync(to int64) {
+	ch, err := st.Wait(to)
+	if err == nil {
+		<-ch
+	}
 }
 
 // Returns an immutable copy of `st` in which `path` exists as a regular file
@@ -453,7 +483,10 @@ func (st *Store) SyncPath(path string) (Getter, os.Error) {
 		return nil, err
 	}
 
-	wt := NewWatch(st, glob, <-st.Seqns)
+	wt, err := NewWatch(st, glob, <-st.Seqns)
+	if err != nil {
+		return nil, err
+	}
 	defer wt.Stop()
 
 	_, g := st.Snap()
