@@ -653,11 +653,11 @@ func (c *conn) watch(t *T, tx txn) {
 
 	var w *store.Watch
 	rev := pb.GetInt64(t.Rev)
-	println("REV:", rev)
 	if rev == 0 {
 		w = store.NewWatch(c.s.St, glob)
 	} else {
-		w = store.NewWatchFrom(c.s.St, glob, rev)
+		w = store.NewWatch(c.s.St, glob)
+		//w = store.NewWatchFrom(c.s.St, glob, rev)
 	}
 
 	go func() {
